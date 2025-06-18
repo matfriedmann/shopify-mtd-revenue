@@ -3,67 +3,95 @@ export default async function handler(req, res) {
   const TOKEN = process.env.SHOPIFY_API_TOKEN;
 
   try {
+    // Define our date window: start of month → now
     const now = new Date();
-    const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    const end   = now.toISOString();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const endOfMonth   = now.toISOString();
 
-    // initial URL with filters
-    let url =
-      `https://${STORE}/admin/api/2025-04/orders.json` +
-      `?status=any` +
-      `&created_at_min=${start}` +
-      `&created_at_max=${end}` +
-      `&limit=250`;
-
-    let revenue = 0;
-
-    while (url) {
-      const resp = await fetch(url, {
-        headers: {
-          "X-Shopify-Access-Token": TOKEN,
-          "Content-Type": "application/json",
-        },
-      });
-
-      if (!resp.ok) {
-        const text = await resp.text();
-        console.error("Shopify API error", resp.status, text);
-        return res
-          .status(502)
-          .json({ error: `Shopify API returned ${resp.status}`, body: text });
-      }
-
-      const { orders } = await resp.json();
-      if (!orders || orders.length === 0) break;
-
-      for (const o of orders) {
-        if (["paid","partially_paid","authorized"].includes(o.financial_status)) {
-          const subtotal  = parseFloat(o.subtotal_price)   || 0;
-          const tax       = parseFloat(o.total_tax)        || 0;
-          const shipping  = (o.shipping_lines || [])
-                             .reduce((sum, x) => sum + parseFloat(x.price || 0), 0);
-          const discounts = parseFloat(o.total_discounts)  || 0;
-          revenue += subtotal + tax + shipping - discounts;
+    // GraphQL query for orders
+    const QUERY = `
+      query OrdersPage($first: Int!, $after: String, $query: String!) {
+        orders(first: $first, after: $after, query: $query) {
+          pageInfo { hasNextPage, endCursor }
+          edges {
+            node {
+              financialStatus
+              currentSubtotalPriceSet { shopMoney { amount } }
+              totalShippingPriceSet   { shopMoney { amount } }
+              totalTaxSet             { shopMoney { amount } }
+              totalDiscountsSet       { shopMoney { amount } }
+              totalRefundedPriceSet   { shopMoney { amount } }
+              test
+              cancelledAt
+            }
+          }
         }
       }
+    `;
 
-      // parse the Link header for next page URL
-      const link = resp.headers.get("link") || "";
-      const nextPart = link
-        .split(",")
-        .find(part => part.includes('rel="next"'));
-      if (nextPart) {
-        const match = nextPart.match(/<([^>]+)>/);
-        url = match ? match[1] : null;
-      } else {
-        url = null;
+    let revenue = 0;
+    let hasNext = true;
+    let cursor  = null;
+
+    // We accept all “real” states and exclude tests/cancelled
+    const VALID = new Set([
+      "PAID", "PARTIALLY_PAID", "AUTHORIZED", "PENDING", "PARTIALLY_REFUNDED"
+    ]);
+
+    while (hasNext) {
+      const variables = {
+        first: 50,
+        after: cursor,
+        query: `created_at:>=${startOfMonth} created_at:<=${endOfMonth}`
+      };
+
+      const resp = await fetch(
+        `https://${STORE}/admin/api/2025-04/graphql.json`,
+        {
+          method: "POST",
+          headers: {
+            "X-Shopify-Access-Token": TOKEN,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ query: QUERY, variables })
+        }
+      );
+      if (!resp.ok) {
+        const err = await resp.text();
+        console.error("GraphQL error:", resp.status, err);
+        return res.status(502).json({ error: err });
       }
+
+      const { data, errors } = await resp.json();
+      if (errors) {
+        console.error("GraphQL errors:", errors);
+        return res.status(502).json({ error: errors });
+      }
+
+      for (const edge of data.orders.edges) {
+        const o = edge.node;
+        // skip test orders or cancelled ones
+        if (o.test || o.cancelledAt) continue;
+        if (!VALID.has(o.financialStatus)) continue;
+
+        const subtotal  = parseFloat(o.currentSubtotalPriceSet.shopMoney.amount) || 0;
+        const shipping  = parseFloat(o.totalShippingPriceSet.shopMoney.amount)   || 0;
+        const tax       = parseFloat(o.totalTaxSet.shopMoney.amount)             || 0;
+        const discounts = parseFloat(o.totalDiscountsSet.shopMoney.amount)       || 0;
+        const refunds   = parseFloat(o.totalRefundedPriceSet.shopMoney.amount)   || 0;
+
+        // exactly how Shopify computes Total Sales:
+        revenue += subtotal + shipping + tax - discounts - refunds;
+      }
+
+      hasNext = data.orders.pageInfo.hasNextPage;
+      cursor  = data.orders.pageInfo.endCursor;
     }
 
-    res.setHeader("Content-Type","application/json");
+    res.setHeader("Content-Type", "application/json");
     res.status(200).json({ number: Math.round(revenue) });
   } catch (err) {
-    console.error("Unhandled error:", err);
+    console.error("Unhandled error in function:", err);
     res.status(500).json({ error: err.toString() });
   }
 }
