@@ -1,59 +1,75 @@
 export default async function handler(req, res) {
   const STORE = "0yi1hx-jw.myshopify.com";
   const TOKEN = process.env.SHOPIFY_API_TOKEN;
-  
-  // boundaries: first of this month → now
-  const now = new Date();
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-  const endOfMonth   = now.toISOString();
 
-  let revenue = 0;
-  let pageInfo = "";
-  let hasNext  = true;
+  try {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const end   = now.toISOString();
 
-  while(hasNext) {
-    // fetch up to 250 orders at a time
-    const url = `https://${STORE}/admin/api/2025-04/orders.json` +
-                `?status=any` +
-                `&created_at_min=${startOfMonth}` +
-                `&created_at_max=${endOfMonth}` +
-                `&limit=250` +
-                pageInfo;
+    let revenue = 0;
+    let pageInfo = "";
+    let hasNext = true;
 
-    const r = await fetch(url, {
-      headers: {
-        "X-Shopify-Access-Token": TOKEN,
-        "Content-Type": "application/json"
+    while (hasNext) {
+      const url =
+        `https://${STORE}/admin/api/2025-04/orders.json` +
+        `?status=any` +
+        `&created_at_min=${start}` +
+        `&created_at_max=${end}` +
+        `&limit=250` +
+        pageInfo;
+
+      const r = await fetch(url, {
+        headers: {
+          "X-Shopify-Access-Token": TOKEN,
+          "Content-Type": "application/json",
+        },
+      });
+
+      // **Log if Shopify returns an error status**
+      if (!r.ok) {
+        const text = await r.text();
+        console.error("Shopify API error", r.status, text);
+        return res
+          .status(502)
+          .json({ error: `Shopify API returned ${r.status}`, body: text });
       }
-    });
-    const { orders } = await r.json();
-    if (!orders.length) break;
 
-    for (const o of orders) {
-      // only count real revenue
-      if (!["paid","partially_paid","authorized"].includes(o.financial_status)) 
-        continue;
+      const body = await r.json();
 
-      const subtotal  = parseFloat(o.subtotal_price);                     // line items before discounts
-      const tax       = parseFloat(o.total_tax);                          // total tax
-      const shipping  = (o.shipping_lines || [])
-                         .reduce((sum,s) => sum + parseFloat(s.price), 0);
-      const discounts = parseFloat(o.total_discounts || 0);
+      // **Log if the shape isn’t what we expect**
+      if (!Array.isArray(body.orders)) {
+        console.error("Unexpected payload:", body);
+        return res
+          .status(502)
+          .json({ error: "Unexpected response from Shopify", body });
+      }
 
-      // Shopify’s “Total sales” = subtotal + tax + shipping − discounts
-      revenue += subtotal + tax + shipping - discounts;
+      for (const o of body.orders) {
+        if (["paid", "partially_paid", "authorized"].includes(o.financial_status)) {
+          const subtotal  = parseFloat(o.subtotal_price)   || 0;
+          const tax       = parseFloat(o.total_tax)        || 0;
+          const shipping  = (o.shipping_lines || []).reduce((s, x) => s + parseFloat(x.price || 0), 0);
+          const discounts = parseFloat(o.total_discounts)  || 0;
+
+          // exactly how Shopify defines “Total sales”
+          revenue += subtotal + tax + shipping - discounts;
+        }
+      }
+
+      const link = r.headers.get("link") || "";
+      if (link.includes('rel="next"')) {
+        const m = link.match(/page_info=([^&>]+)/);
+        pageInfo = m ? `&page_info=${m[1]}` : "";
+      } else {
+        hasNext = false;
+      }
     }
 
-    // pagination
-    const link = r.headers.get("link") || "";
-    if (link.includes('rel="next"')) {
-      const match = link.match(/page_info=([^&>]+)/);
-      pageInfo = match ? `&page_info=${match[1]}` : "";
-    } else {
-      hasNext = false;
-    }
+    return res.status(200).json({ number: Math.round(revenue) });
+  } catch (err) {
+    console.error("Unhandled error in function:", err);
+    return res.status(500).json({ error: err.toString() });
   }
-
-  res.setHeader("Content-Type","application/json");
-  res.status(200).json({ number: Math.round(revenue) });
 }
