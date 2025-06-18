@@ -24,9 +24,12 @@ export default async function handler(req, res) {
     const data = await response.json();
     if (!data.orders || data.orders.length === 0) break;
 
-    for (const order of data.orders) {
-      revenue += parseFloat(order.total_price);
-    }
+    for (const order of data.orders || []) {
+  const validStatuses = ["paid", "partially_paid", "authorized"];
+  if (validStatuses.includes(order.financial_status)) {
+    revenue += parseFloat(order.total_price);
+  }
+}
 
     const linkHeader = response.headers.get("link");
     if (linkHeader && linkHeader.includes('rel="next"')) {
