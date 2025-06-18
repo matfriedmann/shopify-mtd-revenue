@@ -12,8 +12,8 @@ export default async function handler(req, res) {
   let hasNext = true;
 
   while (hasNext) {
-    const url = `https://${store}/admin/api/2023-10/orders.json?status=any&created_at_min=${isoStart}&created_at_max=${isoEnd}&limit=250${pageInfo}`;
-    
+    const url = `https://${store}/admin/api/2025-04/orders.json?status=any&created_at_min=${isoStart}&created_at_max=${isoEnd}&limit=250${pageInfo}`;
+
     const response = await fetch(url, {
       headers: {
         "X-Shopify-Access-Token": token,
@@ -24,12 +24,12 @@ export default async function handler(req, res) {
     const data = await response.json();
     if (!data.orders || data.orders.length === 0) break;
 
-    for (const order of data.orders || []) {
-  const validStatuses = ["paid", "partially_paid", "authorized"];
-  if (validStatuses.includes(order.financial_status)) {
-    revenue += parseFloat(order.total_price);
-  }
-}
+    for (const order of data.orders) {
+      const validStatuses = ["paid", "partially_paid", "authorized"];
+      if (validStatuses.includes(order.financial_status)) {
+        revenue += parseFloat(order.current_total_price);
+      }
+    }
 
     const linkHeader = response.headers.get("link");
     if (linkHeader && linkHeader.includes('rel="next"')) {
