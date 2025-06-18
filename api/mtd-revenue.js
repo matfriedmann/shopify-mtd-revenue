@@ -1,45 +1,59 @@
 export default async function handler(req, res) {
-  const store = "0yi1hx-jw.myshopify.com";
-  const token = process.env.SHOPIFY_API_TOKEN;
-
+  const STORE = "0yi1hx-jw.myshopify.com";
+  const TOKEN = process.env.SHOPIFY_API_TOKEN;
+  
+  // boundaries: first of this month → now
   const now = new Date();
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const isoStart = startOfMonth.toISOString();
-  const isoEnd = now.toISOString();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const endOfMonth   = now.toISOString();
 
   let revenue = 0;
   let pageInfo = "";
-  let hasNext = true;
+  let hasNext  = true;
 
-  while (hasNext) {
-    const url = `https://${store}/admin/api/2025-04/orders.json?status=any&created_at_min=${isoStart}&created_at_max=${isoEnd}&limit=250${pageInfo}`;
+  while(hasNext) {
+    // fetch up to 250 orders at a time
+    const url = `https://${STORE}/admin/api/2025-04/orders.json` +
+                `?status=any` +
+                `&created_at_min=${startOfMonth}` +
+                `&created_at_max=${endOfMonth}` +
+                `&limit=250` +
+                pageInfo;
 
-    const response = await fetch(url, {
+    const r = await fetch(url, {
       headers: {
-        "X-Shopify-Access-Token": token,
+        "X-Shopify-Access-Token": TOKEN,
         "Content-Type": "application/json"
       }
     });
+    const { orders } = await r.json();
+    if (!orders.length) break;
 
-    const data = await response.json();
-    if (!data.orders || data.orders.length === 0) break;
+    for (const o of orders) {
+      // only count real revenue
+      if (!["paid","partially_paid","authorized"].includes(o.financial_status)) 
+        continue;
 
-    for (const order of data.orders) {
-      const validStatuses = ["paid", "partially_paid", "authorized"];
-      if (validStatuses.includes(order.financial_status)) {
-        revenue += parseFloat(order.current_total_price);
-      }
+      const subtotal  = parseFloat(o.subtotal_price);                     // line items before discounts
+      const tax       = parseFloat(o.total_tax);                          // total tax
+      const shipping  = (o.shipping_lines || [])
+                         .reduce((sum,s) => sum + parseFloat(s.price), 0);
+      const discounts = parseFloat(o.total_discounts || 0);
+
+      // Shopify’s “Total sales” = subtotal + tax + shipping − discounts
+      revenue += subtotal + tax + shipping - discounts;
     }
 
-    const linkHeader = response.headers.get("link");
-    if (linkHeader && linkHeader.includes('rel="next"')) {
-      const match = linkHeader.match(/page_info=([^&>]+)/);
+    // pagination
+    const link = r.headers.get("link") || "";
+    if (link.includes('rel="next"')) {
+      const match = link.match(/page_info=([^&>]+)/);
       pageInfo = match ? `&page_info=${match[1]}` : "";
     } else {
       hasNext = false;
     }
   }
 
-  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Type","application/json");
   res.status(200).json({ number: Math.round(revenue) });
 }
