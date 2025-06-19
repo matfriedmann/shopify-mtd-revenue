@@ -3,105 +3,57 @@ export default async function handler(req, res) {
   const TOKEN = process.env.SHOPIFY_API_TOKEN;
 
   try {
-    // Define date range: start of month → now
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    const endOfMonth = now.toISOString();
+    // --- Timezone Fix: Store is in UTC-3 (e.g. São Paulo) ---
+    const tzOffset = -3 * 60; // in minutes
+    const localNow = new Date(Date.now() + tzOffset * 60 * 1000);
+
+    // First day of the current month, local time
+    const startOfMonth = new Date(Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), 1));
+    const isoStart = startOfMonth.toISOString();
+    const isoEnd = new Date().toISOString(); // now in UTC
 
     let revenue = 0;
-    let hasNext = true;
-    let cursor = null;
+    let url = `https://${STORE}/admin/api/2025-04/orders.json?status=any&created_at_min=${isoStart}&created_at_max=${isoEnd}&limit=250`;
 
-    // Acceptable financial statuses
-    const VALID_STATUSES = new Set([
-      "PAID", "PARTIALLY_PAID", "AUTHORIZED", "PENDING", "PARTIALLY_REFUNDED"
-    ]);
-
-    // GraphQL query to fetch orders
-    const QUERY = `
-      query OrdersPage($first: Int!, $after: String, $query: String!) {
-        orders(first: $first, after: $after, query: $query) {
-          pageInfo { hasNextPage endCursor }
-          edges {
-            node {
-              id
-              displayFinancialStatus
-              currentSubtotalPriceSet { shopMoney { amount } }
-              totalShippingPriceSet   { shopMoney { amount } }
-              totalTaxSet             { shopMoney { amount } }
-              totalDiscountsSet       { shopMoney { amount } }
-              transactions(first: 50) {
-                edges { node { kind amountSet { shopMoney { amount } } } }
-              }
-              test
-              cancelledAt
-            }
-          }
-        }
-      }
-    `;
-
-    // Loop through pages
-    while (hasNext) {
-      const response = await fetch(
-        `https://${STORE}/admin/api/2025-04/graphql.json`, {
-          method: "POST",
-          headers: {
-            "X-Shopify-Access-Token": TOKEN,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            query: QUERY,
-            variables: {
-              first: 50,
-              after: cursor,
-              query: `created_at:>=${startOfMonth} created_at:<=${endOfMonth}`
-            }
-          })
-        }
-      );
+    while (url) {
+      const response = await fetch(url, {
+        headers: {
+          "X-Shopify-Access-Token": TOKEN,
+          "Content-Type": "application/json",
+        },
+      });
 
       if (!response.ok) {
-        const text = await response.text();
-        console.error("GraphQL error:", response.status, text);
-        return res.status(502).json({ error: `GraphQL API returned ${response.status}`, body: text });
+        const err = await response.text();
+        console.error("Shopify error:", err);
+        return res.status(502).json({ error: err });
       }
 
-      const { data, errors } = await response.json();
-      if (errors) {
-        console.error("GraphQL errors:", errors);
-        return res.status(502).json({ error: errors });
+      const { orders } = await response.json();
+
+      for (const order of orders) {
+        if (order.financial_status === "paid") {
+          revenue += parseFloat(order.subtotal_price || 0);
+        }
       }
 
-      // Process orders
-      for (const edge of data.orders.edges) {
-        const o = edge.node;
-        // Skip test or cancelled
-        if (o.test || o.cancelledAt) continue;
-        if (!VALID_STATUSES.has(o.displayFinancialStatus)) continue;
-
-        const subtotal = parseFloat(o.currentSubtotalPriceSet.shopMoney.amount) || 0;
-        const shipping = parseFloat(o.totalShippingPriceSet.shopMoney.amount)   || 0;
-        const tax      = parseFloat(o.totalTaxSet.shopMoney.amount)           || 0;
-        const discounts= parseFloat(o.totalDiscountsSet.shopMoney.amount)     || 0;
-        const refunds = o.transactions.edges
-          .filter(t => t.node.kind === "REFUND")
-          .reduce((sum, t) => sum + (parseFloat(t.node.amountSet.shopMoney.amount) || 0), 0);
-
-        revenue += subtotal + shipping + tax - discounts - refunds;
-      }
-
-      // Pagination
-      hasNext = data.orders.pageInfo.hasNextPage;
-      cursor = data.orders.pageInfo.endCursor;
+      const link = response.headers.get("link");
+      const next = link && link.includes('rel="next"')
+        ? (link.match(/<([^>]+)>/) || [])[1]
+        : null;
+      url = next || null;
     }
 
-    // Return the result
+    const rounded = Math.round(revenue);
+
+    // Push to Smiirl
+    const pushUrl = `http://api.smiirl.com/e08e3c3b3c0d/set-number/1efb9641f0aa06d56b82faf4c830f72d/${rounded}`;
+    await fetch(pushUrl, { method: "GET" });
+
     res.setHeader("Content-Type", "application/json");
-    res.status(200).json({ number: Math.round(revenue) });
+    res.status(200).json({ number: rounded });
   } catch (err) {
     console.error("Unhandled error:", err);
     res.status(500).json({ error: err.toString() });
   }
 }
-
