@@ -4,13 +4,13 @@ export default async function handler(req, res) {
 
   try {
     // --- Timezone Fix: Store is in UTC-3 (e.g. São Paulo) ---
-    const tzOffset = -3 * 60; // minutes
+    const tzOffset = -3 * 60; // in minutes
     const localNow = new Date(Date.now() + tzOffset * 60 * 1000);
 
-    // First day of the month in store's local time (UTC-3)
+    // First day of the current month, local time
     const startOfMonth = new Date(Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), 1));
     const isoStart = startOfMonth.toISOString();
-    const isoEnd = new Date().toISOString(); // current UTC time
+    const isoEnd = new Date().toISOString(); // now in UTC
 
     let revenue = 0;
     let url = `https://${STORE}/admin/api/2025-04/orders.json?status=any&created_at_min=${isoStart}&created_at_max=${isoEnd}&limit=250`;
