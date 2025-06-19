@@ -31,11 +31,9 @@ export default async function handler(req, res) {
 
       for (const order of orders) {
         const valid = ["paid", "partially_paid", "authorized"];
-if (order.financial_status === \"paid\") {
-  const paid = parseFloat(order.total_price || 0);
-  const refunded = parseFloat(order.total_refunded || 0);
-  revenue += paid - refunded;
-}
+        if (valid.includes(order.financial_status)) {
+          revenue += parseFloat(order.subtotal_price || 0);
+        }
       }
 
       const link = response.headers.get("link");
