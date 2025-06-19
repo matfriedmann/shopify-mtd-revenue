@@ -6,8 +6,10 @@ export default async function handler(req, res) {
     // --- Timezone Fix: Store is in UTC-3 (e.g. São Paulo) ---
     const tzOffset = -3 * 60; // minutes
     const localNow = new Date(Date.now() + tzOffset * 60 * 1000);
-    const start = new Date(Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), localNow.getUTCDate()));
-    const isoStart = start.toISOString();
+
+    // First day of the month in store's local time (UTC-3)
+    const startOfMonth = new Date(Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), 1));
+    const isoStart = startOfMonth.toISOString();
     const isoEnd = new Date().toISOString(); // current UTC time
 
     let revenue = 0;
@@ -30,8 +32,7 @@ export default async function handler(req, res) {
       const { orders } = await response.json();
 
       for (const order of orders) {
-        const valid = ["paid", "partially_paid", "authorized"];
-        if (valid.includes(order.financial_status)) {
+        if (order.financial_status === "paid") {
           revenue += parseFloat(order.subtotal_price || 0);
         }
       }
