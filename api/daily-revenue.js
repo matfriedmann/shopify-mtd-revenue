@@ -3,11 +3,12 @@ export default async function handler(req, res) {
   const TOKEN = process.env.SHOPIFY_API_TOKEN;
 
   try {
-    // Define today's 00:00:00 in ISO
-    const now = new Date();
-    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    // --- Timezone Fix: Store is in UTC-3 (e.g. São Paulo) ---
+    const tzOffset = -3 * 60; // minutes
+    const localNow = new Date(Date.now() + tzOffset * 60 * 1000);
+    const start = new Date(Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), localNow.getUTCDate()));
     const isoStart = start.toISOString();
-    const isoEnd = now.toISOString();
+    const isoEnd = new Date().toISOString(); // current UTC time
 
     let revenue = 0;
     let url = `https://${STORE}/admin/api/2025-04/orders.json?status=any&created_at_min=${isoStart}&created_at_max=${isoEnd}&limit=250`;
