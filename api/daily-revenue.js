@@ -32,7 +32,7 @@ export default async function handler(req, res) {
       for (const order of orders) {
         const valid = ["paid", "partially_paid", "authorized"];
         if (valid.includes(order.financial_status)) {
-          revenue += parseFloat(order.subtotal_price || 0);
+          revenue += parseFloat(order.total_price || 0);
         }
       }
 
